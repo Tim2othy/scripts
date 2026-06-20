@@ -2,19 +2,22 @@
 #SingleInstance Force
 
 ; ============================================================================
-;  capture.ahk  -  quick-save highlighted text or a screenshot to Obsidian
+;  capture.ahk  -  quick-save highlighted text OR a screenshot to Obsidian
 ; ----------------------------------------------------------------------------
-;  Ctrl+F9   capture highlighted text  -> pick a category -> appended to file
-;  Ctrl+F10  save a snip               -> snip first with Win+Shift+S, then this
+;  Ctrl+F9   one hotkey for both:
+;              - if text is highlighted, it captures that text
+;              - otherwise it saves the screenshot on the clipboard
+;                (snip first with Win+Shift+S)
+;            then a tiny menu asks for a category and appends the entry.
 ;
-;  Each entry is appended to captured\cap-<category>.md in a fixed shape that
-;  is trivial to parse later (e.g. with Python / regex, for Anki):
+;  Each entry is one line in captured\cap-<category>.md, as a numbered-list
+;  item (Obsidian auto-renumbers 1, 2, 3, ...):
 ;
-;      ## 2026-06-20 14:32:05
-;      <the text, or  ![[2026-06-20_14-32-05.png]]  for a screenshot>
-;      <blank line>
+;      1. 2026-06-20 21:19:34 - the captured text
+;      1. 2026-06-20 21:20:02 - ![[2026-06-20_21-20-02.png]]
 ;
-;  Python:  re.split(r'(?m)^## ', text)  ->  each block = "timestamp\ncontent"
+;  Python:  for each line  ->  re.match(r'^\d+\. (.+?) - (.*)$', line)
+;           group(1) = timestamp, group(2) = text or image embed.
 ; ============================================================================
 
 ; ---------------- config ----------------
@@ -33,27 +36,26 @@ global catMenu := Menu()
 for cat in Categories
     catMenu.Add(cat, OnCategory)
 
-; ---------------- hotkeys ----------------
-^F9:: {                  ; Ctrl+F9 — capture highlighted text
+; ---------------- hotkey ----------------
+^F9:: {                  ; Ctrl+F9 — capture text if selected, else the screenshot
     global gMode, gText, catMenu
     saved := ClipboardAll()
     A_Clipboard := ""
     Send("^c")
-    if !ClipWait(1) {            ; nothing was selected
-        A_Clipboard := saved
-        Notify("Nothing selected")
+    if (ClipWait(0.5) && A_Clipboard != "") {        ; something was highlighted
+        gText := RegExReplace(Trim(A_Clipboard), "\s+", " ")   ; flatten to one line
+        A_Clipboard := saved                          ; leave clipboard untouched
+        gMode := "text"
+        catMenu.Show()
         return
     }
-    gText := Trim(A_Clipboard, " `t`r`n")
-    A_Clipboard := saved        ; leave the user's clipboard as it was
-    gMode := "text"
-    catMenu.Show()
-}
-
-^F10:: {                 ; Ctrl+F10 — save the snip sitting on the clipboard
-    global gMode, catMenu
-    gMode := "image"
-    catMenu.Show()
+    A_Clipboard := saved                              ; nothing selected -> restore
+    if ClipHasImage() {
+        gMode := "image"
+        catMenu.Show()
+    } else {
+        Notify("Nothing highlighted, and no screenshot on the clipboard")
+    }
 }
 
 ; ---------------- core ----------------
@@ -63,18 +65,24 @@ OnCategory(itemName, itemPos, myMenu) {
     heading := FormatTime(, "yyyy-MM-dd HH:mm:ss")
 
     if (gMode = "text") {
-        FileAppend("## " heading "`r`n" gText "`r`n`r`n", file, "UTF-8")
+        FileAppend("1. " heading " - " gText "`r`n", file, "UTF-8")
         Notify("Saved to " itemName)
     } else if (gMode = "image") {
         stamp   := FormatTime(, "yyyy-MM-dd_HH-mm-ss")
         imgPath := ImgDir "\" stamp ".png"
         if SaveClipImage(imgPath) {
-            FileAppend("## " heading "`r`n![[" stamp ".png]]`r`n`r`n", file, "UTF-8")
+            FileAppend("1. " heading " - ![[" stamp ".png]]`r`n", file, "UTF-8")
             Notify("Saved image to " itemName)
         } else {
-            Notify("No image on clipboard — snip with Win+Shift+S first")
+            Notify("Couldn't read an image from the clipboard")
         }
     }
+}
+
+; True if the clipboard holds a bitmap (CF_BITMAP=2 or CF_DIB=8).
+ClipHasImage() {
+    return DllCall("IsClipboardFormatAvailable", "UInt", 2)
+        || DllCall("IsClipboardFormatAvailable", "UInt", 8)
 }
 
 ; Save the clipboard image to PNG via a short-lived PowerShell call.
